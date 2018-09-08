@@ -1,0 +1,284 @@
+import json
+import pygame
+from sys import exit
+import random
+import requests
+import screeninfo
+
+from item import Item
+from kuchen import Kuchen as KuchenClass
+from collision import check_collision_boundaries, check_collision
+from button import Button
+from textbox import Textbox
+
+# TODO:
+# order element draw on run()
+# call api if online on nextStatus
+# what does server do and what it doesn't
+
+class GameLoop():
+    # COLORS
+    WHITE = (255, 255, 255)
+    GREY = (155, 155, 155)
+    BLACK = (0, 0, 0)
+    
+    throw_force = 5
+    throw_angle = 45
+    P1_score = 0
+    P2_score = 0
+
+    # I dont include JustStarted and Finished here, to mark them a outside the regular flow
+    statusFlow = [
+    "P1_Ready",
+    "P1_Threw",
+    "P1_Missed",
+    "P1_Hit",
+    "P2_Ready",
+    "P2_Threw",
+    "P2_Missed",
+    "P2_Hit"
+    ]
+    gameStatus = "JustStarted"
+    api_url_base = 'http://127.0.0.1:5000/' 
+    api_url = '{0}info'.format(api_url_base)
+    
+    def __init__(self, ):
+        self.fps = 60
+
+        self.screen_width = 1024
+        self.screen_height = 580
+        self.gravity = 0.1
+
+        # Online?
+        self.online = False
+
+        # Images
+        # K is for Kuchen, P1 and P2 for Player 1 and Player 2
+        self.K_sprite = pygame.image.load("drawables/kuchen.png")
+        self.P1_sprite = pygame.image.load("drawables/player1.png")
+        self.P2_sprite = pygame.image.load("drawables/player2.png")
+
+        # Sizes
+        self.K_size_x = 10
+        self.K_size_y = 10 
+        P1_size_x = 20
+        P1_size_y = 20 
+        P2_size_x = 20
+        P2_size_y = 20 
+
+        # Positions
+        self.K_pos = (15, self.screen_height - 15)
+        self.P1_pos = (0, self.screen_height - P1_size_y)
+        self.P2_pos = (self.screen_width - P2_size_x, self.screen_height - P2_size_y)
+
+        # Init of Items in the game
+        self.Kuchen = KuchenClass(self.K_size_x, self.K_size_y, self.K_pos[0], self.K_pos[1])
+        self.Kuchen.set_v(0, 0)
+        self.Player1 = Item(P1_size_x, P1_size_y, self.P1_pos[0], self.P1_pos[1])
+        self.Player1.set_v(0, 0)
+        self.Player1.set_a(0, self.gravity)
+        self.Player2 = Item(P2_size_x, P2_size_y, self.P2_pos[0], self.P2_pos[1])
+        self.Player2.set_v(0, 0)
+        self.Player2.set_a(0, self.gravity)
+
+        # Pygame elements
+        pygame.init()
+        pygame.font.init()
+        gameDisplay = pygame.display
+        self.screen = gameDisplay.set_mode((self.screen_width, self.screen_height))
+        gameDisplay.set_caption('Throw the Kuchen')
+        self.clock = pygame.time.Clock()
+        allsprites = pygame.sprite.RenderPlain((self.Player1, self.Player2, self.Kuchen))
+
+        # Background image
+        self.imgBg = pygame.image.load("drawables/bg.png")
+
+        # User Interface Elements
+        self.wind = self.get_wind()
+        if self.wind < 0: self.msgWind = str(abs(self.wind)) + " ->"
+        elif self.wind > 0: self.msgWind = "<- " + str(abs(self.wind))
+        else: self.msgWind = str(abs(self.wind))
+        self.txtWind = Textbox(self.msgWind , (self.screen_width // 2, 0))
+        self.txtForce = Textbox(str(self.throw_force), (self.screen_width // 2, 50))
+        self.txtAngle = Textbox(str(int(self.throw_angle)), (self.screen_width // 2, 100))
+        self.btnThrow = Button("drawables/button_throw.png", (self.screen_width // 2, 200), "Throw!")
+        self.btnContinue = Button("drawables/button_continue.png", (self.screen_width // 2, 200), "Press to continue")
+
+        # This might be changed if we use a random starting player
+        self.gameStatus = "P1_Ready"
+        self.score_added = False
+
+    def getKeys(self):
+
+        delta_angle = 0
+        delta_force = 0
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_UP]:
+            if self.throw_angle < 90:
+                self.throw_angle += 0.05
+            else:
+                self.throw_angle = 90
+        if keys[pygame.K_DOWN]:
+            if self.throw_angle > 0:
+                self.throw_angle -= 0.05
+            else:
+                self.throw_angle = 0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.MOUSEBUTTONUP:
+                mousepos = pygame.mouse.get_pos()
+                bt_area = self.btnThrow.get_area()
+                bc_area = self.btnContinue.get_area()
+                if bt_area[0] < mousepos[0] < bt_area[1] and bt_area[2] < mousepos[1] < bt_area[3]:
+                    self.gameStatus = self.throw(self.Kuchen, self.gameStatus, self.wind)
+                    if self.wind < 0: self.msgWind = str(abs(self.wind)) + " ->"
+                    elif self.wind > 0: self.msgWind = "<- " + str(abs(self.wind))
+                    else: self.msgWind = str(abs(self.wind))
+                    self.txtWind = Textbox(self.msgWind , (self.screen_width // 2, 0))
+                if bc_area[0] < mousepos[0] < bc_area[1] and bc_area[2] < mousepos[1] < bc_area[3]:
+                    if self.gameStatus[2:] == "_Hit":
+                        self.score_added = False
+                    self.wind = self.nextPlayer()
+                    if self.wind > 0: self.msgWind = str(abs(self.wind)) + " ->"
+                    elif self.wind < 0: self.msgWind = "<- " + str(abs(self.wind))
+                    else: self.msgWind = str(abs(self.wind))
+                    self.txtWind = Textbox(self.msgWind , (self.screen_width // 2, 0))
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    delta_angle = 1
+                if event.key == pygame.K_DOWN:
+                    delta_angle = -1
+                if event.key == pygame.K_LEFT:
+                    delta_force = -1
+                if event.key == pygame.K_RIGHT:
+                    delta_force = 1
+                if event.key == pygame.K_RETURN:
+                    if self.gameStatus[2:] == "_Ready":
+                        self.gameStatus = self.throw(self.Kuchen, self.gameStatus, self.wind)
+                    elif self.gameStatus[2:] == "_Missed" or self.gameStatus[2:] == "_Hit":
+                        if self.gameStatus[2:] == "_Hit":
+                            self.score_added = False
+                        self.wind = self.nextPlayer()
+                        if self.wind > 0: self.msgWind = str(abs(self.wind)) + " ->"
+                        elif self.wind < 0: self.msgWind = "<- " + str(abs(self.wind))
+                        else: self.msgWind = str(abs(self.wind))
+                        self.txtWind = Textbox(self.msgWind , (self.screen_width // 2, 0))
+                        self.screen.blit(self.K_sprite, self.K_pos)
+            if event.type == pygame.KEYUP:
+                if event.key == pygame.K_UP:
+                    delta_angle = 0
+                if event.key == pygame.K_DOWN:
+                    delta_angle = 0
+                if event.key == pygame.K_LEFT:
+                    delta_force = 0
+                if event.key == pygame.K_RIGHT:
+                    delta_force = 0
+
+        self.throw_angle += delta_angle
+        self.throw_force += delta_force
+
+    def getCollisions(self):
+        new_pos = self.Kuchen.update()
+        if (self.gameStatus[0:2] == "P1"):
+            self.gameStatus = check_collision(self.Kuchen, self.Player2, self.gameStatus)
+        elif (self.gameStatus[0:2] == "P2"):
+            self.gameStatus = check_collision(self.Kuchen, self.Player1, self.gameStatus)
+        if self.gameStatus != "P1_Hit" and self.gameStatus != "P2_Hit":
+            self.gameStatus = check_collision_boundaries(self.Kuchen, 0, 0, self.screen_width, self.screen_height, self.gameStatus)
+        return new_pos
+
+    def nextStatus(self):
+        for statusIx in list(range(0, len(self.statusFlow) - 1, 1)):
+            if self.gameStatus == self.statusFlow[statusIx]:
+                newStatus = self.statusFlow[(statusIx + 1) % len(self.statusFlow)]
+
+
+    def throw(self, thrownObject, Status, wind):
+        NewStatus = Status.split('_')[0] + "_Threw"
+        # We correct angle for -y and both players here instead of under item.py
+        if Status[0:2] == "P1":
+            corrected_angle = 90 - int(self.throw_angle)
+        elif Status[0:2] == "P2":
+            corrected_angle = 270 + int(self.throw_angle)
+        thrownObject.set_v_vector(self.throw_force, corrected_angle)
+        thrownObject.set_a(wind, self.gravity)
+        return NewStatus
+
+    def nextPlayer(self): 
+        if self.online:
+            url_text = '{0}' + self.gameStatus
+            self.api_url = url_text.format(self.api_url_base)
+            response = requests.put(self.api_url)
+            exitcode = response.status_code
+            data = json.loads(response.content.decode('utf-8'))
+            self.gameStatus = data['gameStatus']
+        else:
+            if self.gameStatus[0:2] == "P1": self.gameStatus = "P2_Ready"
+            elif self.gameStatus[0:2] == "P2": self.gameStatus = "P1_Ready"
+        
+        if self.gameStatus[0:2] == "P2":
+            self.Kuchen.set_pos(self.screen_width - 15, self.screen_height - 15)
+        elif self.gameStatus[0:2] == "P1":
+            self.Kuchen.set_pos(15, self.screen_height - 15)
+
+        NewWind = self.get_wind()
+        return NewWind
+
+    def get_wind(self):
+        #0.05 is fine
+        newWind = random.randint(-5, 5) / 100
+        return newWind
+
+    def run(self):
+        self.screen.blit(self.imgBg, (0, 0))
+        while not self.gameStatus == "Finished":
+            #tick
+            self.clock.tick(self.fps)
+            #input
+            self.getKeys()
+            #update and draw
+            if (self.gameStatus[2:] == "_Threw"):
+                self.K_pos = self.getCollisions()
+                print(self.K_pos)
+            elif (self.gameStatus[2:] == "_Ready"):
+                self.txtWind.draw(self.screen)
+                self.txtForce.draw(self.screen)
+                self.txtAngle.draw(self.screen)
+                self.btnThrow.draw(self.screen)
+            elif (self.gameStatus[2:] == "_Missed"):
+                self.btnContinue.draw(self.screen)
+            elif (self.gameStatus[2:] == "_Hit"):
+                if self.score_added == False:
+                    if self.gameStatus[0:2] == "P1":
+                        self.P1_score += 1
+                    elif self.gameStatus[0:2] == "P2":
+                        self.P2_score += 1
+                    self.score_added = True
+                PxWinsTxt = Textbox(self.gameStatus[0:2] + " Wins!", (200, 50))
+                WinCounterTxt = Textbox(str(self.P1_score) + " : " + str(self.P2_score), (200, 150))
+                PxWinsTxt.draw(self.screen)
+                WinCounterTxt.draw(self.screen)
+                self.btnContinue.draw(self.screen)
+            ##NOT NEEDED IF NOT ONLINE? -> self.nextStatus()
+        #    self.screen.fill(0)
+            # redraw background
+            print("####")
+            old_pos = self.K_pos
+            #self.K_pos = self.Kuchen.get_pos()
+            print(old_pos)
+            self.screen.blit(self.imgBg, (old_pos[0] - self.K_size_x, old_pos[1] - self.K_size_y), pygame.Rect(old_pos[0] - self.K_size_x, old_pos[1] - self.K_size_y, 3 * self.K_size_x, 3 * self.K_size_y ))
+
+
+            self.screen.blit(self.P1_sprite, self.P1_pos)
+            self.screen.blit(self.P2_sprite, self.P2_pos)
+            self.screen.blit(self.K_sprite, self.K_pos)
+            self.txtForce = Textbox(str(self.throw_force), (self.screen_width // 2, 50))
+            self.txtAngle = Textbox(str(int(self.throw_angle)), (self.screen_width // 2, 100))
+            pygame.display.flip()
+
+        pygame.quit()
+        quit()
+

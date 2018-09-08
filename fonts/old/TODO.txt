@@ -1,0 +1,12 @@
+- create restart button
+- make continuous key pressed
+- show current wind always, not the next one
+- make positions, velocity, accel decimal (2 decs?), calculate integer part of it
+
+GOALs
+Wind
+Turns
+Player2 AI
+
+ISSUES
+collision from something like an edge leaves the item on the edge, stucK
